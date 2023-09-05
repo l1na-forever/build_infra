@@ -1,0 +1,99 @@
+Parameters:
+  ProjectName:
+    Type: String
+  BranchName:
+    Type: String
+    Default: mainline
+  ComputeImage:
+    Type: String
+    Default: aws/codebuild/standard:7.0
+  ComputeHardwareType:
+    Type: String
+    Default: LINUX_CONTAINER
+    AllowedValues: ["ARM_CONTAINER", "LINUX_CONTAINER", "LINUX_GPU_CONTAINER"]
+
+Resources:
+  ArtifactBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      VersioningConfiguration:
+        Status: Enabled
+  ServiceRolePolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Join ['', [!Ref ProjectName, 'ServiceRole']]
+      PolicyDocument:
+         Version: 2012-10-17
+         Statement:
+          - Sid: TalkAmongstEachOther
+            Effect: Allow
+            Action: "*"
+            Resource: "*"
+      Roles:
+        - !Ref CloudWatchEventsServiceRole
+        - !Ref CodeBuildServiceRole
+  CloudWatchEventsServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          Effect: Allow
+          Principal:
+            Service: events.amazonaws.com
+          Action: "sts:AssumeRole"
+  CodeBuildServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          Effect: Allow
+          Principal:
+            Service: codebuild.amazonaws.com
+          Action: sts:AssumeRole
+  CodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties: 
+      Artifacts: 
+        Location: !Ref ArtifactBucket
+        Name: /
+        NamespaceType: BUILD_ID
+        OverrideArtifactName: true
+        Packaging: NONE
+        Path: !Join ['', [!Ref ProjectName, '-artifacts']]
+        Type: S3
+      BadgeEnabled: true
+      Environment:
+        ComputeType: BUILD_GENERAL1_LARGE
+        Image: !Ref ComputeImage
+        Type: !Ref ComputeHardwareType
+      LogsConfig: 
+        CloudWatchLogs:
+          GroupName: !Join ['', [!Ref ProjectName, 'build-logs']]
+          Status: ENABLED
+      Name: !Ref ProjectName
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
+      Source: 
+        Location: !GetAtt Repository.CloneUrlHttp
+        Type: CODECOMMIT
+      TimeoutInMinutes: 20
+  AutoBuildRule:
+    Type: AWS::Events::Rule
+    Properties:
+      EventPattern:
+        source: ['aws.codecommit']
+        detail-type: ['CodeCommit Repository State Change']
+        resources: [!GetAtt Repository.Arn]
+        detail:
+          event: ['referenceCreated', 'referenceUpdated']
+          referenceType: ['branch']
+          referenceName: [!Ref BranchName]
+      Targets:
+        - Arn: !GetAtt CodeBuildProject.Arn
+          RoleArn: !GetAtt CloudWatchEventsServiceRole.Arn
+          Id: !Join ['', [!Ref ProjectName, '-AutoBuildRule']]
+  Repository:
+    Type: AWS::CodeCommit::Repository
+    Properties:
+      RepositoryName: !Ref ProjectName
